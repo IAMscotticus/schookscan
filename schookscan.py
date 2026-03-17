@@ -27,10 +27,10 @@ def run_command(cmd, log_file=None):
         subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
 
 # Service-based actions
-def run_nikto(target):
-    log_file = os.path.join(LOG_DIR, f"nikto_{target}.log")
-    print(f"{GREEN}[+] Running Nikto on {target}{RESET} (log: {log_file})")
-    run_command(["nikto", "-h", target], log_file)
+def run_nikto(target, port):
+    log_file = os.path.join(LOG_DIR, f"nikto_{target}_{port}.log")
+    print(f"{GREEN}[+] Running Nikto on {target}:{port}{RESET} (log: {log_file})")
+    run_command(["nikto", "-h", target, "-p", str(port)], log_file)
 
 def run_feroxbuster(target, ssl=False):
     url = f"https://{target}" if ssl else f"http://{target}"
@@ -73,7 +73,7 @@ def parse_ports_and_services(xml_file):
             continue
         ip = addr_elem.get("addr")
         if ip not in host_data:
-            host_data[ip] = {"tcp": [], "udp": [], "services": set()}
+            host_data[ip] = {"tcp": [], "udp": [], "services": set(), "web_ports": set()}
         for port in host.findall(".//port"):
             state = port.find("state").get("state")
             proto = port.get("protocol")
@@ -84,6 +84,9 @@ def parse_ports_and_services(xml_file):
                     host_data[ip]["services"].add(service_elem.get("name"))
                 if proto == "tcp":
                     host_data[ip]["tcp"].append(portid)
+                    # Identify web ports
+                    if portid in ["80", "443", "8080", "8443", "10443"]:
+                        host_data[ip].setdefault("web_ports", set()).add(portid)
                 elif proto == "udp" and state == "open":  # exclude open|filtered
                     host_data[ip]["udp"].append(portid)
     return host_data
@@ -121,10 +124,15 @@ def main():
     for ip, info in all_hosts.items():
         print(f"\n{BLUE}[+] Processing host {ip}...{RESET}")
         services = info["services"]
-        if "http" in services or "https" in services:
-            print(f"    {GREEN}-> Web ports detected, running Nikto and Feroxbuster{RESET}")
-            run_nikto(ip)
-            run_feroxbuster(ip, ssl="https" in services)
+        # Run Nikto for each detected web port
+        if info["web_ports"]:
+            print(f"    {GREEN}-> Web ports detected ({', '.join(info['web_ports'])}), running Nikto + Feroxbuster{RESET}")
+        for port in info["web_ports"]:
+            run_nikto(ip, port)
+    
+        # SSL determination based on typical HTTPS ports
+        ssl_present = any(p in ["443", "8443", "10443"] for p in info["web_ports"])
+        run_feroxbuster(ip, ssl=ssl_present)
         if "snmp" in services:
             run_snmp_tools(ip)
         if "microsoft-ds" in services or "smb" in services:
